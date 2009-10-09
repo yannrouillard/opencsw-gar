@@ -157,7 +157,7 @@ SPKG_WORKDIR   ?= $(CURDIR)/$(WORKDIR)
 
 SPKG_DEPEND_DB  = $(GARDIR)/csw/depend.db
 
-SPKG_PKGFILE ?= %{bitname}-%{SPKG_VERSION}%{SPKG_REVSTAMP}-%{SPKG_OSNAME}-%{arch}-$(or $(filter $(call _REVISION),UNCOMMITTED NOTVERSIONED NOSVN),CSW).pkg
+SPKG_PKGFILE ?= %{bitname}-%{SPKG_VERSION},%{SPKG_REVSTAMP}-%{SPKG_OSNAME}-%{arch}-$(or $(filter $(call _REVISION),UNCOMMITTED NOTVERSIONED NOSVN),CSW).pkg
 
 # Handle cswclassutils
 # - prepend cswpreserveconf if it is not already in SPKG_CLASSES
@@ -191,9 +191,9 @@ SPKG_FULL_REVSTAMP=1
 endif
 
 ifeq ($(SPKG_FULL_REVSTAMP),1)
-SPKG_REVSTAMP  ?= ,REV=$(shell date '+%Y.%m.%d.%H.%M')
+$(call SETONCE,SPKG_REVSTAMP,REV=$(shell date '+%Y.%m.%d.%H.%M'))
 else
-SPKG_REVSTAMP  ?= ,REV=$(shell date '+%Y.%m.%d')
+$(call SETONCE,SPKG_REVSTAMP,REV=$(shell date '+%Y.%m.%d'))
 endif
 
 # Where we find our mkpackage global templates
@@ -279,7 +279,7 @@ endef
 # The package may be generated during this build or already installed on the system.
 # /etc/crypto/certs/SUNWObjectCA=../../../etc/certs/SUNWObjectCA l none SUNWcsr
 #perl -ane '$$f=quotemeta("$1");if($$F[0]=~/^$$f(=.*)?$$/){print join(" ",$$F[3..$$#F]),"\n";exit}'</var/sadm/install/contents
-#$(shell /usr/sbin/pkgchk -l -p $1 2>/dev/null | awk '/^Current/ {p=0} p==1 {print} /^Referenced/ {p=1}' | perl -ane 'print join("\n",@F)')
+#$(shell /usr/sbin/pkgchk -l -p $1 2>/dev/null | $(GAWK) '/^Current/ {p=0} p==1 {print} /^Referenced/ {p=1}' | perl -ane 'print join("\n",@F)')
 # 'pkchk -l -p' doesn't work as it concatenates package names with more than 14 characters,
 # e. g. SUNWgnome-base-libs-develSUNWgnome-calculatorSUNWgnome-freedb-libsSUNWgnome-cd-burnerSUNWgnome-character-map
 define file2pkg
@@ -306,6 +306,28 @@ _test-linktargets:
 
 $(foreach SPEC,$(_PKG_SPECS),$(if $(PROTOTYPE_FILTER_$(SPEC)),$(eval _PROTOTYPE_FILTER_$(SPEC) ?= | $(PROTOTYPE_FILTER_$(SPEC)))))
 $(foreach SPEC,$(_PKG_SPECS),$(if $(PROTOTYPE_FILTER),$(eval _PROTOTYPE_FILTER_$(SPEC) ?= | $(PROTOTYPE_FILTER))))
+
+# Assemble prototype modifiers
+# PROTOTYPE_MODIFIERS = mytweaks
+# PROTOTYPE_FTYPE_mytweaks = e
+# PROTOTYPE_CLASS_mytweaks = cswconffile
+# PROTOTYPE_FILES_mytweaks = $(bindir)/.*\.conf
+# PROTOTYPE_PERMS_mytweaks = 0644
+# PROTOTYPE_USER_mytweaks = somebody
+# PROTOTYPE_GROUP_mytweaks = somegroup
+
+_PROTOTYPE_MODIFIERS = | perl -ane '\
+		$(foreach M,$(PROTOTYPE_MODIFIERS),\
+			$(if $(PROTOTYPE_FILES_$M),if( $$F[2] =~ m(^$(PROTOTYPE_FILES_$M)$$) ) {)\
+				$(if $(PROTOTYPE_FTYPE_$M),$$F[0] = "$(PROTOTYPE_FTYPE_$M)";)\
+				$(if $(PROTOTYPE_CLASS_$M),$$F[1] = "$(PROTOTYPE_CLASS_$M)";)\
+				$(if $(PROTOTYPE_PERMS_$M),$$F[3] = "$(PROTOTYPE_PERMS_$M)";)\
+				$(if $(PROTOTYPE_USER_$M),$$F[4] = "$(PROTOTYPE_USER_$M)";)\
+				$(if $(PROTOTYPE_GROUP_$M),$$F[5] = "$(PROTOTYPE_GROUP_$M)";)\
+			$(if $(PROTOTYPE_FILES_$M),})\
+		)\
+                print join(" ",@F),"\n";'
+
 
 # This file contains all installed pathes. This can be used as a starting point
 # for distributing files to individual packages.
@@ -342,13 +364,13 @@ $(WORKDIR)/%.prototype: | $(PROTOTYPE)
 	               ) \
 	              <$(PROTOTYPE); \
 	   if [ -n "$(EXTRA_PKGFILES_$*)" ]; then echo "$(EXTRA_PKGFILES_$*)"; fi \
-	  ) $(_CSWCLASS_FILTER) $(_PROTOTYPE_FILTER_$*) >$@; \
+	  ) $(_CSWCLASS_FILTER) $(_PROTOTYPE_MODIFIERS) $(_PROTOTYPE_FILTER_$*) >$@; \
 	else \
-	  cat $(PROTOTYPE) $(_CSWCLASS_FILTER) $(_PROTOTYPE_FILTER_$*) >$@; \
+	  cat $(PROTOTYPE) $(_CSWCLASS_FILTER) $(_PROTOTYPE_MODIFIERS) $(_PROTOTYPE_FILTER_$*) >$@; \
 	fi
 
 $(WORKDIR)/%.prototype-$(GARCH): | $(WORKDIR)/%.prototype
-	$(_DBG)cat $(WORKDIR)/$*.prototype $(_PROTOTYPE_FILTER_$*) >$@
+	$(_DBG)cat $(WORKDIR)/$*.prototype >$@
 
 # Dynamic depends are constructed as follows:
 # - Packages the currently constructed one depends on can be specified with
@@ -374,7 +396,7 @@ $(WORKDIR)/%.depend: $(WORKDIR)
 		$(foreach PKG,$(sort $(_EXTRA_GAR_PKGS)) $(REQUIRED_PKGS_$*) $(REQUIRED_PKGS),\
 			$(if $(SPKG_DESC_$(PKG)), \
 				echo "P $(PKG) $(call catalogname,$(PKG)) - $(SPKG_DESC_$(PKG))";, \
-				echo "$(shell (/usr/bin/pkginfo $(PKG) || echo "P $(PKG) - ") | awk '{ $$1 = "P"; print } ')"; \
+				echo "$(shell (/usr/bin/pkginfo $(PKG) || echo "P $(PKG) - ") | $(GAWK) '{ $$1 = "P"; print } ')"; \
 			) \
 		)) >$@)
 
@@ -470,7 +492,7 @@ $(WORKDIR)/%.pkginfo: $(WORKDIR)
 	$(_DBG)(echo "PKG=$*"; \
 	echo "NAME=$(call catalogname,$*) - $(call pkgvar,SPKG_DESC,$*)"; \
 	echo "ARCH=$(if $(or $(ARCHALL),$(ARCHALL_$*)),all,$(call pkgvar,GARCH,$*))"; \
-	echo "VERSION=$(call pkgvar,SPKG_VERSION,$*)$(call pkgvar,SPKG_REVSTAMP,$*)"; \
+	echo "VERSION=$(call pkgvar,SPKG_VERSION,$*),$(call pkgvar,SPKG_REVSTAMP,$*)"; \
 	echo "CATEGORY=$(call pkgvar,SPKG_CATEGORY,$*)"; \
 	echo "VENDOR=$(call pkgvar,SPKG_VENDOR,$*)"; \
 	echo "EMAIL=$(call pkgvar,SPKG_EMAIL,$*)"; \
@@ -530,8 +552,10 @@ reset-merge-license:
 merge-src: _SRCDIR=$(PKGROOT)$(sourcedir)/$(call catalogname,$(SRCPACKAGE_BASE))
 merge-src: fetch
 	$(_DBG)mkdir -p $(_SRCDIR)/files
-	$(_DBG)(cd $(DOWNLOADDIR); pax -rH -w -v $(foreach F,$(DISTFILES) $(PATCHFILES),$F) $(_SRCDIR)/files)
-	$(_DBG)(cd $(CURDIR); pax -rH -w -v Makefile checksums $(_SRCDIR))
+	$(_DBG)-rm -f $(addprefix $(_SRCDIR)/files/,$(DISTFILES) $(PATCHFILES))
+	$(_DBG)(cd $(DOWNLOADDIR); cp $(DISTFILES) $(PATCHFILES) $(_SRCDIR)/files)
+	$(_DBG)-rm -f $(addprefix $(_SRCDIR)/,Makefile checksums gar)
+	$(_DBG)(cd $(CURDIR); cp Makefile checksums $(_SRCDIR))
 	$(_DBG)ln -s ../gar/$(GARSYSTEMVERSION) $(_SRCDIR)/gar
 	$(MAKECOOKIE)
 
@@ -557,16 +581,34 @@ $(SPKG_DESTDIRS):
 # On a normal packaging workflow this is not used.
 prototypes: extract merge $(SPKG_DESTDIRS) pre-package $(foreach SPEC,$(_PKG_SPECS),$(WORKDIR)/$(SPEC).prototype-$(GARCH))
 
+# Verify that the host on we are currently packaging is one of the platform
+# hosts. If there are no platform hosts defined the test is skipped.
+validateplatform:
+	$(if $(strip $(foreach P,$(PACKAGING_PLATFORMS),$(PACKAGING_HOST_$P))),\
+	  $(if $(filter $(THISHOST),$(foreach P,$(PACKAGING_PLATFORMS),$(PACKAGING_HOST_$P))),\
+	    @$(MAKECOOKIE),\
+		$(warning *** You are building this package on a non-requested platform host '$(THISHOST)'. The follow platforms were requested:)\
+		$(foreach P,$(PACKAGING_PLATFORMS),\
+			$(warning *** - $P $(if $(PACKAGING_HOST_$P),to be build on host '$(PACKAGING_HOST_$P)',with no suitable host available))\
+		)\
+		$(error You can execute '$(MAKE) platforms' to automatically build on all necessary platforms.)\
+	),@$(MAKECOOKIE))
+
 # We depend on extract as the additional package files (like .gspec) must be
 # unpacked to global/ for packaging. E. g. 'merge' depends only on the specific
 # modulations and does not fill global/.
-package: extract merge $(SPKG_DESTDIRS) pre-package $(PACKAGE_TARGETS) post-package
+_package: validateplatform extract-global merge $(SPKG_DESTDIRS) pre-package $(PACKAGE_TARGETS) post-package
+
+package: _package
 	@echo
 	@echo "The following packages have been built:"
 	@echo
-	@$(foreach SPEC,$(_PKG_SPECS),echo $(SPEC);echo "  $(SPKG_EXPORT)/$(shell $(call _PKG_ENV,$(SPEC)) $(GARBIN)/mkpackage -qs $(WORKDIR)/$(SPEC).gspec -D pkgfile).gz";)
+	@$(MAKE) -s PLATFORM=$(PLATFORM) _pkgshow
 	@echo
 	@$(DONADA)
+
+_pkgshow:
+	@$(foreach SPEC,$(_PKG_SPECS),printf "  %-20s %s\n"  $(SPEC) $(SPKG_EXPORT)/$(shell $(call _PKG_ENV,$(SPEC)) $(GARBIN)/mkpackage -qs $(WORKDIR)/$(SPEC).gspec -D pkgfile).gz;)
 
 # The dynamic pkginfo is only generated for dynamic gspec-files
 package-%: $(WORKDIR)/%.gspec $(if $(findstring %.gspec,$(DISTFILES)),,$(WORKDIR)/%.pkginfo) $(WORKDIR)/%.prototype-$(GARCH) $(WORKDIR)/%.depend
@@ -588,11 +630,11 @@ package-p:
 # pkgcheck - check if the package is compliant
 #
 pkgcheck: $(addprefix pkgcheck-,$(_PKG_SPECS))
-	$(DONADA)
+	@$(DONADA)
 
 pkgcheck-%:
 	@echo " ==> Checking compliance: $*"
-	@( LC_ALL=C checkpkg $(SPKG_EXPORT)/`$(call _PKG_ENV,$1) mkpackage -qs $(WORKDIR)/$*.gspec -D pkgfile`.gz ) || exit 2
+	@( LC_ALL=C $(GARBIN)/checkpkg $(SPKG_EXPORT)/`$(call _PKG_ENV,$1) mkpackage -qs $(WORKDIR)/$*.gspec -D pkgfile`.gz ) || exit 2
 
 pkgcheck-p:
 	@$(foreach COOKIEFILE,$(PKGCHECK_TARGETS), test -e $(COOKIEDIR)/$(COOKIEFILE) ;)
@@ -613,6 +655,55 @@ pkgreset-%:
 	@rm -f $(WORKDIR)/copyright $(WORKDIR)/*.copyright
 
 repackage: pkgreset package
+
+# This rule automatically logs into every host where a package for this software should
+# be built. It is especially suited for automated build bots.
+platforms:
+	$(foreach P,$(PACKAGING_PLATFORMS),\
+		$(if $(PACKAGING_HOST_$P),\
+			$(if $(filter $(THISHOST),$(PACKAGING_HOST_$P)),\
+				$(MAKE) PLATFORM=$P _package && ,\
+				$(SSH) -t $(PACKAGING_HOST_$P) "$(MAKE) -C $(CURDIR) PLATFORM=$P _package" && \
+			),\
+			$(error *** No host has been defined for platform $P)\
+		)\
+	) true
+	@echo
+	@echo "The following packages have been built during this invocation:"
+	@echo
+	@$(foreach P,$(PACKAGING_PLATFORMS),\
+		echo "* Platform $P\c";\
+		$(if $(filter $(THISHOST),$(PACKAGING_HOST_$P)),\
+			echo " (built on this host)";\
+			  $(MAKE) -s PLATFORM=$P _pkgshow;echo;,\
+			echo " (built on host '$(PACKAGING_HOST_$P)')";\
+			  $(SSH) $(PACKAGING_HOST_$P) "$(MAKE) -C $(CURDIR) -s PLATFORM=$P _pkgshow";echo;\
+		)\
+	)
+	@$(MAKECOOKIE)
+
+replatforms: spotless platforms
+
+# Print relecant informations about the platform
+platformenv:
+	@$(foreach P,$(PACKAGING_PLATFORMS),\
+		echo "* Platform '$P'";\
+		$(if $(PACKAGING_HOST_$P),\
+			$(if $(filter $(THISHOST),$(PACKAGING_HOST_$P)),\
+				echo "  - Package built on this host";,\
+				echo "  - Package built on host '$(PACKAGING_HOST_$P)'";\
+			),\
+			echo "Package can not be built for this platform as there is no host defined";\
+		)\
+	)
+
+submitpkg: submitpkg-default
+
+submitpkg-%: _PKGURL=$(shell svn info .. | $(GAWK) '$$1 == "URL:" { print $$2 }')
+submitpkg-%:
+	@$(if $(filter $(call _REVISION),UNCOMMITTED NOTVERSIONED NOSVN),\
+		$(error You have local files not in the repository. Please commit everything before submitting a package))
+	$(SVN) -m "$(GARNAME): Tag as release $(SPKG_VERSION),$(SPKG_REVSTAMP)$(if $(filter default,$*),, for project '$*')" cp $(_PKGURL)/trunk $(_PKGURL)/tags/$(if $(filter default,$*),,$*_)$(GARNAME)-$(SPKG_VERSION),$(SPKG_REVSTAMP)
 
 # dependb - update the dependency database
 #

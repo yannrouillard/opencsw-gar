@@ -11,15 +11,29 @@
 
 # Pick up user information
 -include $(HOME)/.garrc
+-include /etc/opt/csw/garrc
+-include /opt/csw/etc/garrc
+
+THISHOST := $(shell uname -n)
+
+# On these platforms packages are built.
+# They will include binaries for all ISAs that are specified for the platform.
+PACKAGING_PLATFORMS ?= solaris8-sparc solaris8-i386
+
+# This is the platform we are currently building. It is either set when
+# invoked from "gmake platforms" or when you build a package on a host
+# that is suitable for the platform.
+# If there are no platform hosts defined the feature is disabled.
+PLATFORM ?= $(firstword $(foreach P,$(PACKAGING_PLATFORMS),$(if $(filter $(THISHOST),$(PACKAGING_HOST_$P)),$P)))
 
 MODULATION ?= global
 FILEDIR ?= files
-DOWNLOADDIR ?= download
-PARTIALDIR ?= $(DOWNLOADDIR)/partial
-WORKROOTDIR ?= work
+WORKROOTDIR ?= $(if $(PLATFORM),work/$(PLATFORM),work)
 WORKDIR ?= $(WORKROOTDIR)/build-$(MODULATION)
 WORKDIR_FIRSTMOD ?= $(WORKROOTDIR)/build-$(firstword $(MODULATIONS))
-COOKIEROOTDIR ?= cookies
+DOWNLOADDIR ?= $(WORKROOTDIR)/download
+PARTIALDIR ?= $(DOWNLOADDIR)/partial
+COOKIEROOTDIR ?= $(WORKROOTDIR)/cookies
 COOKIEDIR ?= $(COOKIEROOTDIR)/$(MODULATION)
 EXTRACTDIR ?= $(WORKDIR)
 WORKSRC ?= $(WORKDIR)/$(DISTNAME)
@@ -35,6 +49,16 @@ ELISP_DIRS ?= $(datadir)/emacs/site-lisp $(EXTRA_ELISP_DIRS)
 
 GIT_PROXY_SCRIPT ?= $(abspath $(GARBIN))/gitproxy
 GIT_DEFAULT_TRACK = +refs/heads/master:refs/remotes/origin/master
+
+# For parallel builds
+PARALLELMODULATIONS ?= 
+MULTITAIL ?= /opt/csw/bin/multitail
+TTY ?= /usr/bin/tty
+
+# For platform hopping
+# Use whatever SSH is found in the path. That is /opt/csw/bin/ssh for Solaris 8 and
+# /usr/bin/ssh for Solaris 9+ and
+SSH ?= ssh
 
 # Outbound proxies
 http_proxy ?= 
@@ -647,6 +671,7 @@ modenv:
 _modenv-modulated:
 	@echo;								\
 	echo "* Modulation $(MODULATION): $(foreach M,$(MODULATORS),$M=$($M))"; \
+	echo "     Build Host = $(call modulation2host)";		\
 	echo "           PATH = $(PATH)";				\
 	echo "PKG_CONFIG_PATH = $(PKG_CONFIG_PATH)";			\
 	echo "         CFLAGS = $(CFLAGS)";				\

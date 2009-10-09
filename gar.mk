@@ -33,6 +33,10 @@ ROOTFROMDEST = $(call DIRSTODOTS,$(DESTDIR))
 MAKEPATH = $(shell echo $(1) | perl -lne 'print join(":", split)')
 TOLOWER = $(shell echo $(1) | tr '[A-Z]' '[a-z]')
 
+# If you call this the value is only evaluated the first time
+# Usage: $(call SETONCE,A,MyComplexVariableEvaluatedOnlyOnce)
+SETONCE = $(eval $(1) ?= $(2))
+
 #meant to take a git url and return just the $proj.git part
 GITPROJ = $(lastword $(subst /, ,$(1)))
 
@@ -75,37 +79,6 @@ all: build
 include $(GARDIR)/gar.conf.mk
 include $(GARDIR)/gar.lib.mk
 
-#################### DIRECTORY MAKERS ####################
-
-# This is to make dirs as needed by the base rules
-$(sort $(DOWNLOADDIR) $(PARTIALDIR) $(COOKIEDIR) $(WORKSRC) $(WORKDIR) $(EXTRACTDIR) $(FILEDIR) $(SCRATCHDIR) $(PKGROOT) $(INSTALL_DIRS) $(INSTALLISADIR) $(GARCHIVEDIR) $(GARPKGDIR) $(STAGINGDIR)) $(COOKIEDIR)/%:
-	@if test -d $@; then : ; else \
-		ginstall -d $@; \
-		echo "ginstall -d $@"; \
-	fi
-
-# These stubs are wildcarded, so that the port maintainer can
-# define something like "pre-configure" and it won't conflict,
-# while the configure target can call "pre-configure" safely even
-# if the port maintainer hasn't defined it.
-# 
-# in addition to the pre-<target> rules, the maintainer may wish
-# to set a "pre-everything" rule, which runs before the first
-# actual target.
-pre-%:
-	@true
-
-post-%:
-	@true
-
-# Call any arbitrary rule recursively for all dependencies
-deep-%: %
-	@for target in "" $(DEPEND_LIST) ; do \
-		test -z "$$target" && continue ; \
-		$(MAKE) -C ../../$$target DESTIMG=$(DESTIMG) $@ ; \
-	done
-	@$(foreach IMG,$(filter-out $(DESTIMG),$(IMGDEPS)),for dep in "" $($(IMG)_DEPENDS); do test -z "$$dep" && continue ; $(MAKE) -C ../../$$dep DESTIMG=$(IMG) $@; done; )
-
 # ========================= MODULATIONS ======================== 
 
 # The default is to modulate over ISAs
@@ -137,7 +110,7 @@ MODULATIONS ?= $(filter-out $(SKIP_MODULATIONS),$(strip $(call modulations,$(str
 
 define _modulate_target
 $(1)-$(2):
-	@gmake MODULATION=$(2) $(3) $(1)-modulated
+	@$(MAKE) MODULATION=$(2) $(3) $(1)-modulated
 	@# This is MAKECOOKIE expanded to use the name of the rule explicily as the rule has
 	@# not been evaluated yet. XXX: Use function _MAKECOOKIE for both
 	@mkdir -p $(COOKIEDIR)/$(dir $(1)-$(2)) && date >> $(COOKIEDIR)/$(1)-$(2)
@@ -147,7 +120,22 @@ endef
 
 define _modulate_target_nocookie
 $(1)-$(2):
-	@gmake -s MODULATION=$(2) $(3) $(1)-modulated
+	@$(MAKE) -s MODULATION=$(2) $(3) $(1)-modulated
+	@# The next line has intentionally been left blank to explicitly terminate this make rule
+
+endef
+
+define _modulate_merge
+$(foreach ASSIGNMENT,$(3),
+merge-$(2): $(ASSIGNMENT)
+)
+merge-$(2): BUILDHOST=$$(call modulation2host)
+merge-$(2):
+	@echo "[===== Building modulation '$(2)' on host '$$(BUILDHOST)' =====]"
+	$$(if $$(and $$(BUILDHOST),$$(filter-out $$(THISHOST),$$(BUILDHOST))),\
+		$(SSH) $$(BUILDHOST) "PATH=$$(PATH) $(MAKE) -C $$(CURDIR) $(if $(PLATFORM),PLATFORM=$(PLATFORM)) MODULATION=$(2) $(3) merge-modulated",\
+		$(MAKE) $(if $(PLATFORM),PLATFORM=$(PLATFORM)) MODULATION=$(2) $(3) merge-modulated\
+	)
 	@# The next line has intentionally been left blank to explicitly terminate this make rule
 
 endef
@@ -162,7 +150,8 @@ $(call _modulate_target_nocookie,reset-build,$(2),$(4))
 $(call _modulate_target,test,$(2),$(4))
 $(call _modulate_target,install,$(2),$(4))
 $(call _modulate_target_nocookie,reset-install,$(2),$(4))
-$(call _modulate_target,merge,$(2),$(4))
+#$(call _modulate_target,merge,$(2),$(4))
+$(call _modulate_merge,,$(2),$(4))
 $(call _modulate_target_nocookie,reset-merge,$(2),$(4))
 $(call _modulate_target_nocookie,clean,$(2),$(4))
 $(call _modulate_target_nocookie,_modenv,$(2),$(4))
@@ -202,6 +191,37 @@ endef
 
 $(eval $(call _modulate,$(MODULATORS)))
 
+#################### DIRECTORY MAKERS ####################
+
+# This is to make dirs as needed by the base rules
+$(sort $(DOWNLOADDIR) $(PARTIALDIR) $(COOKIEDIR) $(WORKSRC) $(addprefix $(WORKROOTDIR)/build-,global $(MODULATIONS)) $(EXTRACTDIR) $(FILEDIR) $(SCRATCHDIR) $(PKGROOT) $(INSTALL_DIRS) $(INSTALLISADIR) $(GARCHIVEDIR) $(GARPKGDIR) $(STAGINGDIR)) $(COOKIEDIR)/%:
+	@if test -d $@; then : ; else \
+		ginstall -d $@; \
+		echo "ginstall -d $@"; \
+	fi
+
+# These stubs are wildcarded, so that the port maintainer can
+# define something like "pre-configure" and it won't conflict,
+# while the configure target can call "pre-configure" safely even
+# if the port maintainer hasn't defined it.
+# 
+# in addition to the pre-<target> rules, the maintainer may wish
+# to set a "pre-everything" rule, which runs before the first
+# actual target.
+pre-%:
+	@true
+
+post-%:
+	@true
+
+# Call any arbitrary rule recursively for all dependencies
+deep-%: %
+	@for target in "" $(DEPEND_LIST) ; do \
+		test -z "$$target" && continue ; \
+		$(MAKE) -C ../../$$target DESTIMG=$(DESTIMG) $@ ; \
+	done
+	@$(foreach IMG,$(filter-out $(DESTIMG),$(IMGDEPS)),for dep in "" $($(IMG)_DEPENDS); do test -z "$$dep" && continue ; $(MAKE) -C ../../$$dep DESTIMG=$(IMG) $@; done; )
+
 
 # ========================= MAIN RULES ========================= 
 # The main rules are the ones that the user can specify as a
@@ -233,7 +253,9 @@ announce-modulation:
 # prerequisite	- Make sure that the system is in a sane state for building the package
 PREREQUISITE_TARGETS = $(addprefix prerequisitepkg-,$(PREREQUISITE_BASE_PKGS) $(PREREQUISITE_PKGS)) $(addprefix prerequisite-,$(PREREQUISITE_SCRIPTS))
 
-prerequisite: announce pre-everything $(COOKIEDIR) $(DOWNLOADDIR) $(PARTIALDIR) $(addprefix dep-$(GARDIR)/,$(FETCHDEPS)) pre-prerequisite $(PREREQUISITE_TARGETS) post-prerequisite
+# Force to be called in global modulation
+prerequisite: $(if $(filter global,$(MODULATION)),announce pre-everything $(COOKIEDIR) $(DOWNLOADDIR) $(PARTIALDIR) $(addprefix dep-$(GARDIR)/,$(FETCHDEPS)) pre-prerequisite $(PREREQUISITE_TARGETS) post-prerequisite)
+	$(if $(filter-out global,$(MODULATION)),$(MAKE) -s MODULATION=global prerequisite)
 	$(DONADA)
 
 prerequisitepkg-%:
@@ -273,12 +295,15 @@ CHECKSUM_TARGETS = $(addprefix checksum-,$(filter-out $(_NOCHECKSUM) $(NOCHECKSU
 checksum: fetch $(COOKIEDIR) pre-checksum $(CHECKSUM_TARGETS) post-checksum
 	@$(DONADA)
 
+checksum-global: $(if $(filter global,$(MODULATION)),checksum)
+	$(if $(filter-out global,$(MODULATION)),$(MAKE) -s MODULATION=global checksum)
+	@$(DONADA)
+
 # The next rule handles the dependency from the modulated context to
 # the contextless checksumming. The rule is called when the cookie
 # to the global checksum is requested. If the global checksum has not run,
 # then run it. Otherwise it is silently accepted.
-checksum-modulated: $(COOKIEDIR)
-	@$(MAKE) -s ISA=global checksum
+checksum-modulated: checksum-global
 	@$(DONADA)
 
 # returns true if checksum has completed successfully, false
@@ -287,11 +312,11 @@ checksum-p:
 	@$(foreach COOKIEFILE,$(CHECKSUM_TARGETS), test -e $(COOKIEDIR)/$(COOKIEFILE) ;)
 
 # makesum		- Generate distinfo (only do this for your own ports!).
-MAKESUM_TARGETS =  $(addprefix $(DOWNLOADDIR)/,$(filter-out $(_NOCHECKSUM) $(NOCHECKSUM),$(ALLFILES))) 
+MAKESUM_TARGETS =  $(filter-out $(_NOCHECKSUM) $(NOCHECKSUM),$(ALLFILES))
 
-makesum: fetch $(MAKESUM_TARGETS)
+makesum: fetch $(addprefix $(DOWNLOADDIR)/,$(MAKESUM_TARGETS))
 	@if test "x$(MAKESUM_TARGETS)" != "x "; then \
-		gmd5sum $(MAKESUM_TARGETS) > $(CHECKSUM_FILE) ; \
+		(cd $(DOWNLOADDIR) && gmd5sum $(MAKESUM_TARGETS)) > $(CHECKSUM_FILE) ; \
 		echo "Checksums made for $(MAKESUM_TARGETS)" ; \
 		cat $(CHECKSUM_FILE) ; \
 	fi
@@ -311,6 +336,10 @@ EXTRACT_TARGETS = $(addprefix extract-archive-,$(filter-out $(NOEXTRACT),$(if $(
 # a complete unpacked set goes to the global dir for packaging (like gspec)
 extract: checksum $(COOKIEDIR) pre-extract extract-modulated $(addprefix extract-,$(MODULATIONS)) post-extract
 	@$(DONADA)
+
+extract-global: $(if $(filter global,$(MODULATION)),extract-modulated)
+	$(if $(filter-out global,$(MODULATION)),$(MAKE) -s MODULATION=global extract)
+	@$(MAKECOOKIE)
 
 extract-modulated: checksum-modulated $(EXTRACTDIR) $(COOKIEDIR) \
 		$(addprefix dep-$(GARDIR)/,$(EXTRACTDEPS)) \
@@ -607,9 +636,54 @@ endef
 
 _PAX_ARGS = $(_INC_EXT_RULE) $(_EXTRA_PAX_ARGS) $(EXTRA_PAX_ARGS_$(MODULATION)) $(EXTRA_PAX_ARGS)
 
+define killprocandparent
+cpids() { \
+  P=$1 \
+  PPIDS=$P \
+  PP=`ps -eo pid,ppid | awk "BEGIN { ORS=\" \" } \\$2 == $P { print \\$1 }\"` \
+  while [ -n "$PP" ]; do \
+    PQ=$PP \
+    PP= \
+    for q in $PQ; do \
+      PPIDS="$PPIDS $q" \
+      PP=$PP\ `ps -eo pid,ppid | awk "BEGIN { ORS=\" \" } \\$2 == $q { print \\$1 }\"` \
+    done \
+  done \
+ \
+  echo $PPIDS \
+}
+endef
+
+
 # The basic merge merges the compiles for all ISAs on the current architecture
-merge: checksum pre-merge $(addprefix merge-,$(MODULATIONS)) merge-license $(if $(COMPILE_ELISP),compile-elisp) $(if $(NOSOURCEPACKAGE),,merge-src) post-merge
+merge: checksum pre-merge merge-do merge-license $(if $(COMPILE_ELISP),compile-elisp) $(if $(NOSOURCEPACKAGE),,merge-src) post-merge
 	@$(DONADA)
+
+merge-do: $(if $(PARALLELMODULATIONS),merge-parallel,merge-sequential)
+
+merge-sequential: $(addprefix merge-,$(MODULATIONS))
+
+merge-parallel: _PIDFILE=$(WORKROOTDIR)/build-global/multitail.pid
+merge-parallel: merge-watch
+	$(_DBG_MERGE)trap "kill -9 `cat $(_PIDFILE) $(foreach M,$(MODULATIONS),$(WORKROOTDIR)/build-$M/build.pid) 2>/dev/null`;stty sane" INT;\
+		$(foreach M,$(MODULATIONS),($(MAKE) merge-$M >$(WORKROOTDIR)/build-$M/build.log 2>&1; echo $$? >$(WORKROOTDIR)/build-$M/build.ret) & echo $$! >$(WORKROOTDIR)/build-$M/build.pid; ) wait
+	$(_DBG_MERGE)if [ -f $(_PIDFILE) ]; then kill `cat $(_PIDFILE)`; stty sane; fi
+	$(_DBG_MERGE)$(foreach M,$(MODULATIONS),if [ "`cat $(WORKROOTDIR)/build-$M/build.ret`" -ne 0 ]; then \
+		echo "Build error in modulation $M. Please see"; \
+		echo "  $(WORKROOTDIR)/build-$M/build.log"; \
+		echo "for details:"; \
+		echo; \
+		tail -100 $(WORKROOTDIR)/build-$M/build.log; \
+		exit "Return code: `cat $(WORKROOTDIR)/build-$M/build.ret`"; \
+	fi;)
+
+merge-watch: _USEMULTITAIL=$(shell test -x $(MULTITAIL) && test -x $(TTY) && $(TTY) >/dev/null 2>&1; if [ $$? -eq 0 ]; then echo yes; fi)
+merge-watch: $(addprefix $(WORKROOTDIR)/build-,global $(MODULATIONS))
+	$(_DBG_MERGE)$(if $(_USEMULTITAIL),\
+		$(MULTITAIL) --retry-all $(foreach M,$(MODULATIONS),$(WORKROOTDIR)/build-$M/build.log) -j & echo $$! > $(WORKROOTDIR)/build-global/multitail.pid,\
+		echo "Building all ISAs in parallel. Please see the individual logfiles for details:";$(foreach M,$(MODULATIONS),echo "- $(WORKROOTDIR)/build-$M/build.log";)\
+	)
+
 
 # This merges the 
 merge-modulated: install-modulated pre-merge-modulated pre-merge-$(MODULATION) $(MERGE_TARGETS) post-merge-$(MODULATION) post-merge-modulated
@@ -705,7 +779,7 @@ imageclean:
 
 spotless: imageclean
 	@echo " ==> Removing $(DESTDIR)"
-	@-rm -rf $(DESTDIR)
+	@-rm -rf work
 
 # Print package dependencies
 PKGDEP_LIST = $(filter-out $(BUILDDEPS),$(DEPEND_LIST))
